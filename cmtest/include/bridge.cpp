@@ -5,7 +5,7 @@
 BlobstoreClient::BlobstoreClient() {}
 
 std::unique_ptr<BlobstoreClient> new_blobstore_client() {
-  std::cout << "Hello Blobstore";
+  std::cout << "Hello Bridge\n";
   hello();
   return std::unique_ptr<BlobstoreClient>(new BlobstoreClient());
 }
