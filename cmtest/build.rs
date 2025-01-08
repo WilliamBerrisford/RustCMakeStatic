@@ -139,7 +139,13 @@ impl Debug for UnDefinedSymbol {
     }
 }
 
+struct LibInfo {
+    libs: HashMap<String, DirEntry>,
+    all_symbols: AllSymbols,
+}
+
 #[derive(Clone)]
+// TODO remove , replace with LibInfo
 struct StaticLib {
     name: String,
     entry: DirEntry,
