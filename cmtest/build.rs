@@ -2,7 +2,7 @@ use std::{
     collections::{HashMap, HashSet},
     error::Error,
     ffi::OsStr,
-    fmt::Debug,
+    fmt::{Debug, Display},
     fs::File,
     hash::Hash,
     io::Read,
@@ -30,45 +30,42 @@ fn main() {
     println!("cargo:rustc-link-search=native={}", lib.display());
     println!("cargo:rustc-link-lib=static=tinkwrap");
 
-    let libs = find_libs(Path::new(&lib.display().to_string()));
+    let all_libs = find_libs(Path::new(&lib.display().to_string()));
 
-    let symbols = generate_lookup_tables(libs.clone());
-    symbols
+    all_libs
+        .all_symbols
         .defined
         .iter()
-        .for_each(|(symbol, static_lib)| println!("{:?} {:?}", symbol, static_lib));
+        .for_each(|(symbol, static_lib)| println!("{:?} {}", symbol, static_lib));
 
-    symbols
+    all_libs
+        .all_symbols
         .undefined
         .iter()
-        .for_each(|(defined, static_lib)| println!("{:?} {:?}", defined, static_lib));
+        .for_each(|(defined, static_lib)| println!("{:?} {}", defined, static_lib));
 
-    for lib in &libs {
-        println!("Found static lib: {}", lib.name);
-        //lib.undefined_symbols
-        //    .into_iter()
-        //    .map(|bytes| String::from_utf8(bytes).unwrap_or(String::from("Not utf8!")))
-        //    .for_each(|name| println!("UndefinedSymbol symbol: {}", name));
-
-        //lib.defined_symbols
-        //    .into_iter()
-        //    .map(|bytes| String::from_utf8(bytes).unwrap_or(String::from("Not utf8!")))
-        //    .for_each(|name| println!("DefinedSymbol symbol: {}", name));
+    for lib in &all_libs.libs {
+        println!("Found static lib: {}", lib);
     }
+}
+
+fn generate_dependancy_graph(symbols: AllSymbols, libs: AllLibs) {
+    todo!()
 }
 
 fn generate_lookup_tables<I>(libs: I) -> AllSymbols
 where
-    I: IntoIterator<Item = StaticLib>,
+    I: IntoIterator<Item = LibInfo>,
 {
-    let mut defined_table: HashMap<DefinedSymbol, StaticLib> = HashMap::new();
-    let mut undefined_table: HashMap<UnDefinedSymbol, StaticLib> = HashMap::new();
+    let mut defined_table: HashMap<DefinedSymbol, LibInfo> = HashMap::new();
+    let mut undefined_table: HashMap<UnDefinedSymbol, LibInfo> = HashMap::new();
     for lib in libs {
-        for symbol in lib.defined_symbols.clone() {
+        let (defined, undefined) = get_symbols(&lib.entry).unwrap_or_default();
+        for symbol in defined {
             defined_table.insert(symbol, lib.clone());
         }
 
-        for symbol in lib.undefined_symbols.clone() {
+        for symbol in undefined {
             undefined_table.insert(symbol, lib.clone());
         }
     }
@@ -82,8 +79,8 @@ where
 static LIB_REGEX: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"lib(.*)\.a").expect("static lib regex failed to compile"));
 
-fn find_libs(base_path: &Path) -> HashSet<StaticLib> {
-    WalkDir::new(base_path)
+fn find_libs(base_path: &Path) -> AllLibs {
+    let libs: HashSet<LibInfo> = WalkDir::new(base_path)
         .into_iter()
         .filter_map(|e| e.ok())
         .filter_map(|entry| entry.metadata().ok().map(|meta| (meta, entry)))
@@ -91,20 +88,20 @@ fn find_libs(base_path: &Path) -> HashSet<StaticLib> {
         .filter(|(_, file)| is_static_lib(file.file_name()))
         .filter(|(_, file)| file.file_name().to_str().is_some())
         .map(|(_, file)| {
-            let (defined, undefined) = get_symbols(&file).unwrap_or_default();
-            StaticLib {
-                name: file.file_name().to_str().unwrap().to_owned(),
-                entry: file,
-                defined_symbols: defined,
-                undefined_symbols: undefined,
-            }
+            let name = file.file_name().to_str().unwrap().to_owned();
+            LibInfo { name, entry: file }
         })
-        .collect::<HashSet<StaticLib>>()
+        .collect();
+
+    let all_symbols = generate_lookup_tables(libs.clone());
+
+    AllLibs { libs, all_symbols }
 }
 
+#[derive(Clone)]
 struct AllSymbols {
-    defined: HashMap<DefinedSymbol, StaticLib>,
-    undefined: HashMap<UnDefinedSymbol, StaticLib>,
+    defined: HashMap<DefinedSymbol, LibInfo>,
+    undefined: HashMap<UnDefinedSymbol, LibInfo>,
 }
 
 #[derive(Clone, Eq, Hash, PartialEq)]
@@ -139,41 +136,37 @@ impl Debug for UnDefinedSymbol {
     }
 }
 
-struct LibInfo {
-    libs: HashMap<String, DirEntry>,
+#[derive(Clone)]
+struct AllLibs {
+    libs: HashSet<LibInfo>,
     all_symbols: AllSymbols,
 }
 
-#[derive(Clone)]
-// TODO remove , replace with LibInfo
-struct StaticLib {
+#[derive(Clone, Debug)]
+struct LibInfo {
     name: String,
     entry: DirEntry,
-    defined_symbols: Vec<DefinedSymbol>,
-    undefined_symbols: Vec<UnDefinedSymbol>,
 }
 
-impl Hash for StaticLib {
+impl Hash for LibInfo {
     fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
         self.name.hash(state);
     }
 }
 
-impl PartialEq for StaticLib {
+impl PartialEq for LibInfo {
     fn eq(&self, other: &Self) -> bool {
         self.name.eq(&other.name)
     }
 }
 
-impl Eq for StaticLib {}
-
-impl Debug for StaticLib {
+impl Display for LibInfo {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("StaticLib")
-            .field("name", &self.name)
-            .finish()
+        write!(f, "{}", self.name)
     }
 }
+
+impl Eq for LibInfo {}
 
 fn get_symbols(
     entry: &DirEntry,

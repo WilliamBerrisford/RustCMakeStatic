@@ -5,8 +5,10 @@ edition = "2021"
 
 [dependencies]
 cxx = { version = "1.0.136", features = ["c++14"] }
+petgraph = "0.7.1"
 
 [build-dependencies]
+petgraph = "0.7.1"
 cxx-build = "1.0.136"
 cmake = "0.1.52"
 ar = "0.9.0"
