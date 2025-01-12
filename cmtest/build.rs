@@ -11,6 +11,11 @@ use std::{
 };
 
 use object::{Object, ObjectSymbol};
+use petgraph::{
+    dot::{Config, Dot},
+    graph::NodeIndex,
+    Graph, IntoWeightedEdge,
+};
 use regex::Regex;
 use walkdir::{DirEntry, WalkDir};
 
@@ -47,10 +52,76 @@ fn main() {
     for lib in &all_libs.libs {
         println!("Found static lib: {}", lib);
     }
+
+    generate_dependancy_graph(all_libs);
 }
 
-fn generate_dependancy_graph(symbols: AllSymbols, libs: AllLibs) {
-    todo!()
+fn generate_dependancy_graph(libs: AllLibs) {
+    let mut dep_graph = Graph::<LibInfo, u8>::new();
+
+    let mut index_to_lib_map: HashMap<NodeIndex, LibInfo> = HashMap::new();
+    let mut lib_to_index_map: HashMap<LibInfo, NodeIndex> = HashMap::new();
+    for lib in libs.libs {
+        let index = dep_graph.add_node(lib.clone());
+        lib_to_index_map.insert(lib.clone(), index);
+        index_to_lib_map.insert(index, lib);
+    }
+
+    let mut dependencies: HashSet<Dependency> = HashSet::new();
+    for (symbol, dependent) in libs.all_symbols.undefined {
+        let Some(dependency) = get_lib_for_symbol(&symbol, &libs.all_symbols.defined) else {
+            continue;
+        };
+
+        let Some(dependency_index) = lib_to_index_map.get(&dependency) else {
+            continue;
+        };
+
+        let Some(dependent_index) = lib_to_index_map.get(&dependent) else {
+            continue;
+        };
+
+        if dependency_index == dependent_index {
+            continue;
+        }
+
+        dependencies.insert(Dependency {
+            dependent: *dependent_index,
+            dependency: *dependency_index,
+        });
+    }
+
+    for dep in dependencies {
+        dep_graph.add_edge(dep.dependent, dep.dependency, 0);
+    }
+    println!("{:?}", Dot::with_config(&dep_graph, &[Config::EdgeNoLabel]));
+}
+
+struct Dependency {
+    dependent: NodeIndex,
+    dependency: NodeIndex,
+}
+
+impl Hash for Dependency {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        self.dependent.hash(state);
+        self.dependency.hash(state);
+    }
+}
+
+impl PartialEq for Dependency {
+    fn eq(&self, other: &Self) -> bool {
+        self.dependent.eq(&other.dependent) && self.dependency.eq(&other.dependency)
+    }
+}
+
+impl Eq for Dependency {}
+
+fn get_lib_for_symbol(
+    symbol: &UnDefinedSymbol,
+    defined_libs: &HashMap<DefinedSymbol, LibInfo>,
+) -> Option<LibInfo> {
+    defined_libs.get(&DefinedSymbol::from(symbol)).cloned()
 }
 
 fn generate_lookup_tables<I>(libs: I) -> AllSymbols
@@ -60,7 +131,11 @@ where
     let mut defined_table: HashMap<DefinedSymbol, LibInfo> = HashMap::new();
     let mut undefined_table: HashMap<UnDefinedSymbol, LibInfo> = HashMap::new();
     for lib in libs {
-        let (defined, undefined) = get_symbols(&lib.entry).unwrap_or_default();
+        let Some(lib_entry) = &lib.entry else {
+            continue;
+        };
+
+        let (defined, undefined) = get_symbols(lib_entry).unwrap_or_default();
         for symbol in defined {
             defined_table.insert(symbol, lib.clone());
         }
@@ -89,7 +164,10 @@ fn find_libs(base_path: &Path) -> AllLibs {
         .filter(|(_, file)| file.file_name().to_str().is_some())
         .map(|(_, file)| {
             let name = file.file_name().to_str().unwrap().to_owned();
-            LibInfo { name, entry: file }
+            LibInfo {
+                name,
+                entry: Some(file),
+            }
         })
         .collect();
 
@@ -107,6 +185,14 @@ struct AllSymbols {
 #[derive(Clone, Eq, Hash, PartialEq)]
 struct DefinedSymbol {
     symbol: Vec<u8>,
+}
+
+impl From<&UnDefinedSymbol> for DefinedSymbol {
+    fn from(value: &UnDefinedSymbol) -> Self {
+        DefinedSymbol {
+            symbol: value.symbol.clone(),
+        }
+    }
 }
 
 impl Debug for DefinedSymbol {
@@ -142,10 +228,10 @@ struct AllLibs {
     all_symbols: AllSymbols,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Default)]
 struct LibInfo {
     name: String,
-    entry: DirEntry,
+    entry: Option<DirEntry>,
 }
 
 impl Hash for LibInfo {
