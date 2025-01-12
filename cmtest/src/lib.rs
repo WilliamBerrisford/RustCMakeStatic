@@ -20,47 +20,7 @@ use petgraph::{
 use regex::Regex;
 use walkdir::{DirEntry, WalkDir};
 
-fn main() {
-    let lib = cmake::build("../tinkwrap");
-
-    cxx_build::bridge("src/main.rs")
-        .file("include/bridge.cpp")
-        .std("c++14")
-        .compile("cmtest");
-
-    println!("cargo:rerun-if-changed=src/main.rs");
-    println!("cargo:rerun-if-changed=include/bridge.cpp");
-    println!("cargo:rerun-if-changed=include/bridge.h");
-    println!("cargo:rerun-if-changed=../tinkwrap");
-
-    println!("cargo:rustc-link-search=native={}", lib.display());
-    println!("cargo:rustc-link-lib=static=tinkwrap");
-
-    let all_libs = find_libs(Path::new(&lib.display().to_string()));
-
-    all_libs
-        .all_symbols
-        .defined
-        .iter()
-        .for_each(|(symbol, static_lib)| println!("{:?} {}", symbol, static_lib));
-
-    all_libs
-        .all_symbols
-        .undefined
-        .iter()
-        .for_each(|(defined, static_lib)| println!("{:?} {}", defined, static_lib));
-
-    for lib in &all_libs.libs {
-        println!("Found static lib: {}", lib);
-    }
-
-    let ordered_libs = order_dependencies(all_libs);
-
-    println!("Ordered dependencies: {:?}", ordered_libs);
-    link_to_dependencies(ordered_libs);
-}
-
-fn link_to_dependencies(ordered_deps: Vec<LibInfo>) {
+pub fn link_to_dependencies(ordered_deps: Vec<LibInfo>) {
     ordered_deps.iter().for_each(|lib| {
         println!(
             "cargo:rustc-link-search=native={}",
@@ -82,7 +42,7 @@ fn link_to_dependencies(ordered_deps: Vec<LibInfo>) {
     });
 }
 
-fn order_dependencies(libs: AllLibs) -> Vec<LibInfo> {
+pub fn order_dependencies(libs: AllLibs) -> Vec<LibInfo> {
     let mut dep_graph = Graph::<LibInfo, u8>::new();
 
     let mut index_to_lib_map: HashMap<NodeIndex, LibInfo> = HashMap::new();
@@ -164,7 +124,7 @@ fn get_lib_for_symbol(
     defined_libs.get(&DefinedSymbol::from(symbol)).cloned()
 }
 
-fn generate_lookup_tables<I>(libs: I) -> AllSymbols
+pub fn generate_lookup_tables<I>(libs: I) -> AllSymbols
 where
     I: IntoIterator<Item = LibInfo>,
 {
@@ -200,20 +160,20 @@ fn get_static_lib_name(file_name: &str) -> Option<String> {
     Some(String::from(&cap[1]))
 }
 
-fn get_static_lib(file_name: &OsStr) -> bool {
+fn is_static_lib(file_name: &OsStr) -> bool {
     let Some(file_name) = file_name.to_str() else {
         return false;
     };
     LIB_REGEX.is_match(file_name)
 }
 
-fn find_libs(base_path: &Path) -> AllLibs {
+pub fn find_libs(base_path: &Path) -> AllLibs {
     let libs: HashSet<LibInfo> = WalkDir::new(base_path)
         .into_iter()
         .filter_map(|e| e.ok())
         .filter_map(|entry| entry.metadata().ok().map(|meta| (meta, entry)))
         .filter(|(metadata, _)| metadata.is_file())
-        .filter(|(_, file)| get_static_lib(file.file_name()))
+        .filter(|(_, file)| is_static_lib(file.file_name()))
         .filter(|(_, file)| file.file_name().to_str().is_some())
         .map(|(_, file)| {
             let name = file.file_name().to_str().unwrap().to_owned();
@@ -230,13 +190,13 @@ fn find_libs(base_path: &Path) -> AllLibs {
 }
 
 #[derive(Clone)]
-struct AllSymbols {
-    defined: HashMap<DefinedSymbol, LibInfo>,
-    undefined: HashMap<UnDefinedSymbol, LibInfo>,
+pub struct AllSymbols {
+    pub defined: HashMap<DefinedSymbol, LibInfo>,
+    pub undefined: HashMap<UnDefinedSymbol, LibInfo>,
 }
 
 #[derive(Clone, Eq, Hash, PartialEq)]
-struct DefinedSymbol {
+pub struct DefinedSymbol {
     symbol: Vec<u8>,
 }
 
@@ -260,7 +220,7 @@ impl Debug for DefinedSymbol {
 }
 
 #[derive(Clone, Eq, Hash, PartialEq)]
-struct UnDefinedSymbol {
+pub struct UnDefinedSymbol {
     symbol: Vec<u8>,
 }
 
@@ -276,13 +236,13 @@ impl Debug for UnDefinedSymbol {
 }
 
 #[derive(Clone)]
-struct AllLibs {
-    libs: HashSet<LibInfo>,
-    all_symbols: AllSymbols,
+pub struct AllLibs {
+    pub libs: HashSet<LibInfo>,
+    pub all_symbols: AllSymbols,
 }
 
 #[derive(Clone, Debug, Default)]
-struct LibInfo {
+pub struct LibInfo {
     name: String,
     entry: Option<DirEntry>,
 }

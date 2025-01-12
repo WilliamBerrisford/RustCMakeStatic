@@ -1,0 +1,12 @@
+[package]
+name = "test-crate"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+cxx = { version = "1.0.136", features = ["c++14"] }
+
+[build-dependencies]
+cxx-build = "1.0.136"
+cmake = "0.1.52"
+cmtest = {path = ".."}

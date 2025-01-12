@@ -1,7 +1,7 @@
 #[cxx::bridge]
 mod ffi {
     unsafe extern "C++" {
-        include!("cmtest/include/bridge.h");
+        include!("test-crate/include/bridge.h");
 
         type BlobstoreClient;
 
