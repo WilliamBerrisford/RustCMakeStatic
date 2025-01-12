@@ -12,7 +12,7 @@ use std::{
 
 use object::{Object, ObjectSymbol};
 use petgraph::{
-    algo::{toposort, DfsSpace},
+    algo::toposort,
     dot::{Config, Dot},
     graph::NodeIndex,
     Graph,
@@ -195,9 +195,7 @@ static LIB_REGEX: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"lib(.*)\.a").expect("static lib regex failed to compile"));
 
 fn get_static_lib_name(file_name: &str) -> Option<String> {
-    let Some(cap) = LIB_REGEX.captures(file_name) else {
-        return None;
-    };
+    let cap = LIB_REGEX.captures(file_name)?;
 
     Some(String::from(&cap[1]))
 }
