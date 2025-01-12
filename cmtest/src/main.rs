@@ -10,5 +10,5 @@ mod ffi {
 }
 
 fn main() {
-    let client = ffi::new_blobstore_client();
+    let _client = ffi::new_blobstore_client();
 }

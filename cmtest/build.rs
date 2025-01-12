@@ -12,9 +12,10 @@ use std::{
 
 use object::{Object, ObjectSymbol};
 use petgraph::{
+    algo::{toposort, DfsSpace},
     dot::{Config, Dot},
     graph::NodeIndex,
-    Graph, IntoWeightedEdge,
+    Graph,
 };
 use regex::Regex;
 use walkdir::{DirEntry, WalkDir};
@@ -53,10 +54,35 @@ fn main() {
         println!("Found static lib: {}", lib);
     }
 
-    generate_dependancy_graph(all_libs);
+    let ordered_libs = order_dependencies(all_libs);
+
+    println!("Ordered dependencies: {:?}", ordered_libs);
+    link_to_dependencies(ordered_libs);
 }
 
-fn generate_dependancy_graph(libs: AllLibs) {
+fn link_to_dependencies(ordered_deps: Vec<LibInfo>) {
+    ordered_deps.iter().for_each(|lib| {
+        println!(
+            "cargo:rustc-link-search=native={}",
+            lib.entry
+                .clone()
+                .expect("No entry exists!")
+                .path()
+                .parent()
+                .expect("lib has no parent!")
+                .to_str()
+                .unwrap()
+        );
+        println!(
+            "cargo:rustc-link-lib=static={}",
+            get_static_lib_name(&lib.name)
+                .expect("Not a static lib!")
+                .as_str()
+        );
+    });
+}
+
+fn order_dependencies(libs: AllLibs) -> Vec<LibInfo> {
     let mut dep_graph = Graph::<LibInfo, u8>::new();
 
     let mut index_to_lib_map: HashMap<NodeIndex, LibInfo> = HashMap::new();
@@ -95,6 +121,20 @@ fn generate_dependancy_graph(libs: AllLibs) {
         dep_graph.add_edge(dep.dependent, dep.dependency, 0);
     }
     println!("{:?}", Dot::with_config(&dep_graph, &[Config::EdgeNoLabel]));
+
+    let ordered_deps =
+        toposort(&dep_graph, None).expect("Cyclical dependancies, cannot compute order!");
+
+    let ordered_libs: Vec<LibInfo> = ordered_deps
+        .iter()
+        .map(|index| {
+            index_to_lib_map
+                .get(index)
+                .expect("Unkown index has appeared!")
+                .clone()
+        })
+        .collect();
+    ordered_libs
 }
 
 struct Dependency {
@@ -154,13 +194,28 @@ where
 static LIB_REGEX: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"lib(.*)\.a").expect("static lib regex failed to compile"));
 
+fn get_static_lib_name(file_name: &str) -> Option<String> {
+    let Some(cap) = LIB_REGEX.captures(file_name) else {
+        return None;
+    };
+
+    Some(String::from(&cap[1]))
+}
+
+fn get_static_lib(file_name: &OsStr) -> bool {
+    let Some(file_name) = file_name.to_str() else {
+        return false;
+    };
+    LIB_REGEX.is_match(file_name)
+}
+
 fn find_libs(base_path: &Path) -> AllLibs {
     let libs: HashSet<LibInfo> = WalkDir::new(base_path)
         .into_iter()
         .filter_map(|e| e.ok())
         .filter_map(|entry| entry.metadata().ok().map(|meta| (meta, entry)))
         .filter(|(metadata, _)| metadata.is_file())
-        .filter(|(_, file)| is_static_lib(file.file_name()))
+        .filter(|(_, file)| get_static_lib(file.file_name()))
         .filter(|(_, file)| file.file_name().to_str().is_some())
         .map(|(_, file)| {
             let name = file.file_name().to_str().unwrap().to_owned();
@@ -297,11 +352,4 @@ fn get_symbols(
     }
 
     Ok((all_defined, all_undefined))
-}
-
-fn is_static_lib(file_name: &OsStr) -> bool {
-    let Some(file_name) = file_name.to_str() else {
-        return false;
-    };
-    LIB_REGEX.is_match(file_name)
 }
