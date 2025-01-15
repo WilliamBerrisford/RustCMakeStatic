@@ -12,12 +12,12 @@ use std::{
 
 use object::{Object, ObjectSymbol};
 use petgraph::{
-    algo::toposort,
-    dot::{Config, Dot},
+    algo::{toposort, Cycle},
     graph::NodeIndex,
     Graph,
 };
 use regex::Regex;
+use thiserror::Error;
 use walkdir::{DirEntry, WalkDir};
 
 pub fn link_to_dependencies(ordered_deps: Vec<LibInfo>) {
@@ -42,7 +42,25 @@ pub fn link_to_dependencies(ordered_deps: Vec<LibInfo>) {
     });
 }
 
-pub fn order_dependencies(libs: AllLibs) -> Vec<LibInfo> {
+#[derive(Error, Debug)]
+pub enum DepFindError {
+    #[error("Cannot determine dependency order, the dependency graph contains a cycle")]
+    CylicDependency,
+    #[error("{dependency_a} and {dependency_b} define the same symbol {}", symbol)]
+    MultipleDefines {
+        dependency_a: String,
+        dependency_b: String,
+        symbol: DefinedSymbol,
+    },
+}
+
+impl From<Cycle<NodeIndex>> for DepFindError {
+    fn from(_value: Cycle<NodeIndex>) -> Self {
+        DepFindError::CylicDependency
+    }
+}
+
+pub fn order_dependencies(libs: AllLibs) -> Result<Vec<LibInfo>, DepFindError> {
     let mut dep_graph = Graph::<LibInfo, u8>::new();
 
     let mut index_to_lib_map: HashMap<NodeIndex, LibInfo> = HashMap::new();
@@ -80,21 +98,19 @@ pub fn order_dependencies(libs: AllLibs) -> Vec<LibInfo> {
     for dep in dependencies {
         dep_graph.add_edge(dep.dependent, dep.dependency, 0);
     }
-    println!("{:?}", Dot::with_config(&dep_graph, &[Config::EdgeNoLabel]));
 
-    let ordered_deps =
-        toposort(&dep_graph, None).expect("Cyclical dependancies, cannot compute order!");
+    let ordered_deps = toposort(&dep_graph, None)?;
 
-    let ordered_libs: Vec<LibInfo> = ordered_deps
-        .iter()
-        .map(|index| {
-            index_to_lib_map
-                .get(index)
-                .expect("Unkown index has appeared!")
-                .clone()
-        })
-        .collect();
-    ordered_libs
+    let mut ordered_libs: Vec<LibInfo> = vec![];
+
+    for index in ordered_deps {
+        match index_to_lib_map.get(&index) {
+            Some(lib) => ordered_libs.push(lib.clone()),
+            None => continue,
+        }
+    }
+
+    Ok(ordered_libs)
 }
 
 struct Dependency {
@@ -121,15 +137,17 @@ fn get_lib_for_symbol(
     symbol: &UnDefinedSymbol,
     defined_libs: &HashMap<DefinedSymbol, LibInfo>,
 ) -> Option<LibInfo> {
-    defined_libs.get(&DefinedSymbol::from(symbol)).cloned()
+    defined_libs.get(&symbol.into()).cloned()
 }
 
-pub fn generate_lookup_tables<I>(libs: I) -> AllSymbols
+pub fn generate_lookup_tables<I>(libs: I) -> Result<AllSymbols, DepFindError>
 where
     I: IntoIterator<Item = LibInfo>,
 {
     let mut defined_table: HashMap<DefinedSymbol, LibInfo> = HashMap::new();
-    let mut undefined_table: HashMap<UnDefinedSymbol, LibInfo> = HashMap::new();
+    let mut undefined_table: Vec<(UnDefinedSymbol, LibInfo)> = vec![];
+    let mut undefined_symbol: Vec<UnDefinedSymbol> = vec![];
+    let mut duplicates: Vec<(DefinedSymbol, LibInfo, LibInfo)> = vec![];
     for lib in libs {
         let Some(lib_entry) = &lib.entry else {
             continue;
@@ -137,18 +155,34 @@ where
 
         let (defined, undefined) = get_symbols(lib_entry).unwrap_or_default();
         for symbol in defined {
-            defined_table.insert(symbol, lib.clone());
+            match defined_table.insert(symbol.clone(), lib.clone()) {
+                Some(first_define) => {
+                    duplicates.push((symbol, first_define, lib.clone()));
+                }
+                None => continue,
+            }
         }
 
         for symbol in undefined {
-            undefined_table.insert(symbol, lib.clone());
+            undefined_table.push((symbol.clone(), lib.clone()));
+            undefined_symbol.push(symbol);
         }
     }
 
-    AllSymbols {
+    for dup in duplicates {
+        if undefined_symbol.contains(&dup.0.clone().into()) {
+            return Err(DepFindError::MultipleDefines {
+                dependency_a: dup.1.name,
+                dependency_b: dup.2.name,
+                symbol: dup.0,
+            });
+        }
+    }
+
+    Ok(AllSymbols {
         defined: defined_table,
         undefined: undefined_table,
-    }
+    })
 }
 
 static LIB_REGEX: LazyLock<Regex> =
@@ -167,7 +201,7 @@ fn is_static_lib(file_name: &OsStr) -> bool {
     LIB_REGEX.is_match(file_name)
 }
 
-pub fn find_libs(base_path: &Path) -> AllLibs {
+pub fn find_libs(base_path: &Path) -> Result<AllLibs, DepFindError> {
     let libs: HashSet<LibInfo> = WalkDir::new(base_path)
         .into_iter()
         .filter_map(|e| e.ok())
@@ -184,20 +218,28 @@ pub fn find_libs(base_path: &Path) -> AllLibs {
         })
         .collect();
 
-    let all_symbols = generate_lookup_tables(libs.clone());
+    let all_symbols = generate_lookup_tables(libs.clone())?;
 
-    AllLibs { libs, all_symbols }
+    Ok(AllLibs { libs, all_symbols })
 }
 
 #[derive(Clone)]
 pub struct AllSymbols {
     pub defined: HashMap<DefinedSymbol, LibInfo>,
-    pub undefined: HashMap<UnDefinedSymbol, LibInfo>,
+    pub undefined: Vec<(UnDefinedSymbol, LibInfo)>,
 }
 
 #[derive(Clone, Eq, Hash, PartialEq)]
 pub struct DefinedSymbol {
     symbol: Vec<u8>,
+}
+
+impl From<UnDefinedSymbol> for DefinedSymbol {
+    fn from(value: UnDefinedSymbol) -> Self {
+        DefinedSymbol {
+            symbol: value.symbol.clone(),
+        }
+    }
 }
 
 impl From<&UnDefinedSymbol> for DefinedSymbol {
@@ -219,9 +261,35 @@ impl Debug for DefinedSymbol {
     }
 }
 
+impl Display for DefinedSymbol {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "{}",
+            &String::from_utf8(self.symbol.clone()).unwrap_or(String::from("Not utf8"))
+        )
+    }
+}
+
 #[derive(Clone, Eq, Hash, PartialEq)]
 pub struct UnDefinedSymbol {
     symbol: Vec<u8>,
+}
+
+impl From<&DefinedSymbol> for UnDefinedSymbol {
+    fn from(value: &DefinedSymbol) -> Self {
+        UnDefinedSymbol {
+            symbol: value.symbol.clone(),
+        }
+    }
+}
+
+impl From<DefinedSymbol> for UnDefinedSymbol {
+    fn from(value: DefinedSymbol) -> Self {
+        UnDefinedSymbol {
+            symbol: value.symbol.clone(),
+        }
+    }
 }
 
 impl Debug for UnDefinedSymbol {

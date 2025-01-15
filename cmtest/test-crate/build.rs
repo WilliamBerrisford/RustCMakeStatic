@@ -17,7 +17,7 @@ fn main() {
     println!("cargo:rustc-link-search=native={}", lib.display());
     println!("cargo:rustc-link-lib=static=tinkwrap");
 
-    let all_libs = find_libs(Path::new(&lib.display().to_string()));
+    let all_libs = find_libs(Path::new(&lib.display().to_string())).unwrap();
 
     all_libs
         .all_symbols
@@ -35,7 +35,7 @@ fn main() {
         println!("Found static lib: {}", lib);
     }
 
-    let ordered_libs = order_dependencies(all_libs);
+    let ordered_libs = order_dependencies(all_libs).expect("failed to order dependencies");
 
     println!("Ordered dependencies: {:?}", ordered_libs);
     link_to_dependencies(ordered_libs);

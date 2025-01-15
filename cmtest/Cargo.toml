@@ -11,4 +11,5 @@ walkdir = "2.5.0"
 regex = "1.11.1"
 object = "0.36.7"
 solvent = "0.8.3"
+thiserror = "2.0.11"
 
